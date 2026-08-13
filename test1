@@ -1,0 +1,151 @@
+import jax
+import jax.numpy as jnp
+import numpy as np
+import matplotlib.pyplot as plt
+
+jax.config.update("jax_enable_x64", True)     # use float64, same precision as numpy
+
+# =====================================================================
+# GENERALIZED SOLVERS
+#   - x is ALWAYS a vector (n-dimensional). A 1-variable problem
+#     simply uses n = 1, i.e. x0 = [2.0] instead of x0 = 2.0
+#   - gradient comes from jax.grad(f), never from finite difference
+#   - bounds=None for unconstrained, bounds=(lo, hi) for a box constraint
+# =====================================================================
+
+def project(x, bounds):
+    if bounds is None:
+        return x
+    lo, hi = bounds
+    return jnp.clip(x, lo, hi)
+
+
+def gradient_descent(f, x0, lr=0.01, bounds=None, tol=1e-6, max_iter=5000):
+    grad_f = jax.grad(f)                        # <-- JAX autograd
+    x = jnp.array(x0, dtype=float)
+    history = [np.array(x)]
+    for i in range(1, max_iter + 1):
+        g = grad_f(x)
+        if jnp.linalg.norm(g) < tol:
+            return np.array(x), i, np.array(history), True
+        x = x - lr * g
+        x = project(x, bounds)
+        history.append(np.array(x))
+    return np.array(x), max_iter, np.array(history), False
+
+
+def gradient_descent_momentum(f, x0, lr=0.01, beta=0.85, bounds=None, tol=1e-6, max_iter=5000):
+    grad_f = jax.grad(f)                        # <-- JAX autograd
+    x = jnp.array(x0, dtype=float)
+    v = jnp.zeros_like(x)
+    history = [np.array(x)]
+    for i in range(1, max_iter + 1):
+        g = grad_f(x)
+        if jnp.linalg.norm(g) < tol:
+            return np.array(x), i, np.array(history), True
+        v = beta * v + g
+        x = x - lr * v
+        x = project(x, bounds)
+        history.append(np.array(x))
+    return np.array(x), max_iter, np.array(history), False
+
+
+def gradient_descent_adam(f, x0, lr=0.05, b1=0.9, b2=0.999, eps=1e-8,
+                          bounds=None, tol=1e-6, max_iter=5000):
+    grad_f = jax.grad(f)                        # <-- JAX autograd
+    x = jnp.array(x0, dtype=float)
+    m = jnp.zeros_like(x)
+    v = jnp.zeros_like(x)
+    history = [np.array(x)]
+    for i in range(1, max_iter + 1):
+        g = grad_f(x)
+        if jnp.linalg.norm(g) < tol:
+            return np.array(x), i, np.array(history), True
+        m = b1*m + (1-b1)*g
+        v = b2*v + (1-b2)*g**2
+        m_hat = m / (1 - b1**i)
+        v_hat = v / (1 - b2**i)
+        x = x - lr * m_hat / (jnp.sqrt(v_hat) + eps)
+        x = project(x, bounds)
+        history.append(np.array(x))
+    return np.array(x), max_iter, np.array(history), False
+
+
+# =====================================================================
+# THE THREE PROBLEMS - each written for a VECTOR input x
+# =====================================================================
+
+def f1(x):
+    return x[0]**2
+
+def f2(x):
+    return (6*x[0] - 2)**2 * jnp.sin(12*x[0] - 4)
+
+def f3(x):
+    return x[0]**4 - 4*x[0]*x[1] + x[1]**4
+
+
+# =====================================================================
+# PROBLEM 1:  f(x) = x^2, unconstrained, n = 1
+# =====================================================================
+
+print("=" * 62)
+print("PROBLEM 1:  f(x) = x^2      (unconstrained, 1 variable)")
+print("=" * 62)
+print("method      x_min       f(x_min)     iters   converged")
+print("-" * 62)
+
+x_min, n, hist, conv = gradient_descent(f1, [2.0], lr=0.1)
+print(f"plain      {x_min[0]:10.6f}  {f1(x_min):11.6f}   {n:5d}   {conv}")
+
+x_min, n, hist, conv = gradient_descent_momentum(f1, [2.0], lr=0.1, beta=0.85)
+print(f"momentum   {x_min[0]:10.6f}  {f1(x_min):11.6f}   {n:5d}   {conv}")
+
+x_min, n, hist, conv = gradient_descent_adam(f1, [2.0], lr=0.05)
+print(f"adam       {x_min[0]:10.6f}  {f1(x_min):11.6f}   {n:5d}   {conv}")
+
+
+# =====================================================================
+# PROBLEM 2:  f(x) = (6x-2)^2 sin(12x-4), CONSTRAINED to [0,1], n = 1
+# =====================================================================
+
+starts2 = [[0.05], [0.20], [0.30], [0.45], [0.60], [0.90]]
+bounds2 = (0.0, 1.0)
+
+for name, solver, kw in [
+    ("PLAIN",    gradient_descent,          dict(lr=0.001)),
+    ("MOMENTUM", gradient_descent_momentum, dict(lr=0.001, beta=0.85)),
+    ("ADAM",     gradient_descent_adam,     dict(lr=0.05)),
+]:
+    print()
+    print("=" * 62)
+    print(f"PROBLEM 2 - {name}     (constrained to [0,1], 1 variable)")
+    print("=" * 62)
+    print("x0      x_min      f(x_min)    iters   converged")
+    print("-" * 62)
+    for x0 in starts2:
+        x_min, n, hist, conv = solver(f2, x0, bounds=bounds2, **kw)
+        print(f"{x0[0]:.2f}   {x_min[0]:9.5f}  {f2(x_min):10.5f}   {n:5d}   {conv}")
+
+
+# =====================================================================
+# PROBLEM 3:  f(x1,x2) = x1^4 - 4 x1 x2 + x2^4, unconstrained, n = 2
+# =====================================================================
+
+starts3 = [[1.8, 1.2], [-1.6, -0.4], [0.05, -0.05], [-1.5, 1.6], [0.9, -1.4]]
+
+for name, solver, kw in [
+    ("PLAIN",    gradient_descent,          dict(lr=0.02)),
+    ("MOMENTUM", gradient_descent_momentum, dict(lr=0.02, beta=0.85)),
+    ("ADAM",     gradient_descent_adam,     dict(lr=0.05)),
+]:
+    print()
+    print("=" * 62)
+    print(f"PROBLEM 3 - {name}     (unconstrained, 2 variables)")
+    print("=" * 62)
+    print("x0                 x_min                f(x_min)  iters  converged")
+    print("-" * 62)
+    for x0 in starts3:
+        x_min, n, hist, conv = solver(f3, x0, **kw)
+        print(f"({x0[0]:5.2f},{x0[1]:6.2f})   ({x_min[0]:8.5f},{x_min[1]:9.5f})  "
+              f"{f3(x_min):8.5f}  {n:5d}   {conv}")
